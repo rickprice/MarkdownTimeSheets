@@ -198,7 +198,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for week in &weeks {
         for day in &week.days {
             if day.total_duration > Duration::zero() {
-                println!("{}: {}", day.date, format_duration(day.total_duration));
+                let weekday = day.date.format("%a").to_string();
+                println!("{} {:3} - {}", day.date, weekday, format_duration(day.total_duration));
             }
         }
     }
