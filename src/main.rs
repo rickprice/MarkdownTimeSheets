@@ -49,6 +49,7 @@ struct WeekSummary {
 struct TimesheetParser {
     start_regex: Regex,
     stop_regex: Regex,
+    work_time_regex: Regex,
 }
 
 impl TimesheetParser {
@@ -56,12 +57,14 @@ impl TimesheetParser {
         Ok(Self {
             start_regex: Regex::new(r"(?i)start(?:ed)?\s+work(?:ing)?(?:\s+at)?\s+(\d{1,2}):(\d{2})")?,
             stop_regex: Regex::new(r"(?i)stop(?:ped)?\s+work(?:ing)?(?:\s+at)?\s+(\d{1,2}):(\d{2})")?,
+            work_time_regex: Regex::new(r"(?i)work\s+time\s+(\d+)\s+(minutes?|hours?)")?,
         })
     }
 
     fn parse_file(&self, content: &str, date: NaiveDate) -> Result<DaySummary, Box<dyn std::error::Error>> {
         let mut entries = Vec::new();
         let mut current_entry = TimeEntry::new();
+        let mut total_work_time_duration = Duration::zero();
 
         for line in content.lines() {
             if let Some(caps) = self.start_regex.captures(line) {
@@ -85,6 +88,19 @@ impl TimesheetParser {
                     entries.push(current_entry);
                     current_entry = TimeEntry::new();
                 }
+            } else if let Some(caps) = self.work_time_regex.captures(line) {
+                let amount: u32 = caps[1].parse()?;
+                let unit = caps[2].to_lowercase();
+                
+                let duration = if unit.starts_with("hour") {
+                    Duration::hours(amount as i64)
+                } else if unit.starts_with("minute") {
+                    Duration::minutes(amount as i64)
+                } else {
+                    Duration::zero()
+                };
+                
+                total_work_time_duration = total_work_time_duration + duration;
             }
         }
 
@@ -92,10 +108,12 @@ impl TimesheetParser {
             entries.push(current_entry);
         }
 
-        let total_duration = entries
+        let time_entries_duration = entries
             .iter()
             .filter_map(|entry| entry.duration())
             .fold(Duration::zero(), |acc, d| acc + d);
+        
+        let total_duration = time_entries_duration + total_work_time_duration;
 
         Ok(DaySummary {
             date,
@@ -407,5 +425,64 @@ Stopped working 21:00
         let summary = parser.parse_file(content, date).unwrap();
         assert_eq!(summary.total_duration.num_hours(), 10);
         assert_eq!(summary.total_duration.num_minutes() % 60, 0);
+    }
+
+    #[test]
+    fn test_work_time_minutes() {
+        let parser = TimesheetParser::new().unwrap();
+        let content = "Work time 90 minutes read textbook";
+        let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap();
+
+        let summary = parser.parse_file(content, date).unwrap();
+        assert_eq!(summary.total_duration.num_hours(), 1);
+        assert_eq!(summary.total_duration.num_minutes() % 60, 30);
+    }
+
+    #[test]
+    fn test_work_time_hour() {
+        let parser = TimesheetParser::new().unwrap();
+        let content = "Work time 1 hour did other work";
+        let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap();
+
+        let summary = parser.parse_file(content, date).unwrap();
+        assert_eq!(summary.total_duration.num_hours(), 1);
+        assert_eq!(summary.total_duration.num_minutes() % 60, 0);
+    }
+
+    #[test]
+    fn test_work_time_hours_plural() {
+        let parser = TimesheetParser::new().unwrap();
+        let content = "Work time 3 hours completed project";
+        let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap();
+
+        let summary = parser.parse_file(content, date).unwrap();
+        assert_eq!(summary.total_duration.num_hours(), 3);
+        assert_eq!(summary.total_duration.num_minutes() % 60, 0);
+    }
+
+    #[test]
+    fn test_work_time_mixed_with_start_stop() {
+        let parser = TimesheetParser::new().unwrap();
+        let content = r#"
+Start work 9:00
+Stop work 12:00
+Work time 90 minutes read textbook
+Work time 1 hour did other work
+"#;
+        let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap();
+
+        let summary = parser.parse_file(content, date).unwrap();
+        assert_eq!(summary.total_duration.num_hours(), 5);
+        assert_eq!(summary.total_duration.num_minutes() % 60, 30);
+    }
+
+    #[test]
+    fn test_work_time_case_insensitive() {
+        let parser = TimesheetParser::new().unwrap();
+        let content = "WORK TIME 45 MINUTES testing";
+        let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap();
+
+        let summary = parser.parse_file(content, date).unwrap();
+        assert_eq!(summary.total_duration.num_minutes(), 45);
     }
 }
