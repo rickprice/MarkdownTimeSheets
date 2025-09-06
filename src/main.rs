@@ -50,6 +50,7 @@ struct TimesheetParser {
     start_regex: Regex,
     stop_regex: Regex,
     work_time_regex: Regex,
+    holiday_regex: Regex,
 }
 
 impl TimesheetParser {
@@ -58,6 +59,7 @@ impl TimesheetParser {
             start_regex: Regex::new(r"(?i)start(?:ed)?\s+work(?:ing)?(?:\s+at)?\s+(\d{1,2}):(\d{2})")?,
             stop_regex: Regex::new(r"(?i)stop(?:ped)?\s+work(?:ing)?(?:\s+at)?\s+(\d{1,2}):(\d{2})")?,
             work_time_regex: Regex::new(r"(?i)work\s+time\s+(\d+)\s+(minutes?|hours?)")?,
+            holiday_regex: Regex::new(r"(?i)(stat(?:utory)?\s+holiday|pto|holiday\s+day)")?,
         })
     }
 
@@ -100,7 +102,9 @@ impl TimesheetParser {
                     Duration::zero()
                 };
                 
-                total_work_time_duration = total_work_time_duration + duration;
+                total_work_time_duration += duration;
+            } else if self.holiday_regex.is_match(line) {
+                total_work_time_duration += Duration::hours(8);
             }
         }
 
@@ -485,5 +489,149 @@ Work time 1 hour did other work
 
         let summary = parser.parse_file(content, date).unwrap();
         assert_eq!(summary.total_duration.num_minutes(), 45);
+    }
+
+    #[test]
+    fn test_stat_holiday() {
+        let parser = TimesheetParser::new().unwrap();
+        let content = "Stat holiday";
+        let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap();
+
+        let summary = parser.parse_file(content, date).unwrap();
+        assert_eq!(summary.total_duration.num_hours(), 8);
+    }
+
+    #[test]
+    fn test_statutory_holiday() {
+        let parser = TimesheetParser::new().unwrap();
+        let content = "Statutory holiday";
+        let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap();
+
+        let summary = parser.parse_file(content, date).unwrap();
+        assert_eq!(summary.total_duration.num_hours(), 8);
+    }
+
+    #[test]
+    fn test_holiday_case_insensitive() {
+        let parser = TimesheetParser::new().unwrap();
+        let content = "STAT HOLIDAY";
+        let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap();
+
+        let summary = parser.parse_file(content, date).unwrap();
+        assert_eq!(summary.total_duration.num_hours(), 8);
+    }
+
+    #[test]
+    fn test_holiday_with_context() {
+        let parser = TimesheetParser::new().unwrap();
+        let content = "Today was a stat holiday - Labour Day";
+        let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap();
+
+        let summary = parser.parse_file(content, date).unwrap();
+        assert_eq!(summary.total_duration.num_hours(), 8);
+    }
+
+    #[test]
+    fn test_holiday_mixed_with_other_entries() {
+        let parser = TimesheetParser::new().unwrap();
+        let content = r#"
+Start work 9:00
+Stop work 12:00
+Stat holiday
+Work time 1 hour extra project
+"#;
+        let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap();
+
+        let summary = parser.parse_file(content, date).unwrap();
+        assert_eq!(summary.total_duration.num_hours(), 12);
+    }
+
+    #[test]
+    fn test_multiple_holidays_same_day() {
+        let parser = TimesheetParser::new().unwrap();
+        let content = r#"
+Stat holiday
+Statutory holiday mentioned again
+"#;
+        let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap();
+
+        let summary = parser.parse_file(content, date).unwrap();
+        assert_eq!(summary.total_duration.num_hours(), 16);
+    }
+
+    #[test]
+    fn test_pto() {
+        let parser = TimesheetParser::new().unwrap();
+        let content = "PTO";
+        let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap();
+
+        let summary = parser.parse_file(content, date).unwrap();
+        assert_eq!(summary.total_duration.num_hours(), 8);
+    }
+
+    #[test]
+    fn test_pto_case_insensitive() {
+        let parser = TimesheetParser::new().unwrap();
+        let content = "pto";
+        let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap();
+
+        let summary = parser.parse_file(content, date).unwrap();
+        assert_eq!(summary.total_duration.num_hours(), 8);
+    }
+
+    #[test]
+    fn test_pto_with_context() {
+        let parser = TimesheetParser::new().unwrap();
+        let content = "Taking PTO today for vacation";
+        let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap();
+
+        let summary = parser.parse_file(content, date).unwrap();
+        assert_eq!(summary.total_duration.num_hours(), 8);
+    }
+
+    #[test]
+    fn test_holiday_day() {
+        let parser = TimesheetParser::new().unwrap();
+        let content = "Holiday day";
+        let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap();
+
+        let summary = parser.parse_file(content, date).unwrap();
+        assert_eq!(summary.total_duration.num_hours(), 8);
+    }
+
+    #[test]
+    fn test_holiday_day_case_insensitive() {
+        let parser = TimesheetParser::new().unwrap();
+        let content = "HOLIDAY DAY";
+        let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap();
+
+        let summary = parser.parse_file(content, date).unwrap();
+        assert_eq!(summary.total_duration.num_hours(), 8);
+    }
+
+    #[test]
+    fn test_holiday_day_with_context() {
+        let parser = TimesheetParser::new().unwrap();
+        let content = "Christmas is a holiday day";
+        let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap();
+
+        let summary = parser.parse_file(content, date).unwrap();
+        assert_eq!(summary.total_duration.num_hours(), 8);
+    }
+
+    #[test]
+    fn test_mixed_holiday_types() {
+        let parser = TimesheetParser::new().unwrap();
+        let content = r#"
+Start work 9:00
+Stop work 12:00
+PTO
+Holiday day
+Stat holiday
+"#;
+        let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap();
+
+        let summary = parser.parse_file(content, date).unwrap();
+        assert_eq!(summary.total_duration.num_hours(), 27);
     }
 }
