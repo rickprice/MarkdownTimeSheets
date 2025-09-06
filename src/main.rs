@@ -33,7 +33,7 @@ impl TimeEntry {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct DaySummary {
     date: NaiveDate,
     total_duration: Duration,
@@ -44,6 +44,13 @@ struct WeekSummary {
     week_start: NaiveDate,
     total_duration: Duration,
     days: Vec<DaySummary>,
+}
+
+#[derive(Debug)]
+struct MonthlySummary {
+    year: i32,
+    month: u32,
+    total_duration: Duration,
 }
 
 struct TimesheetParser {
@@ -145,22 +152,22 @@ impl TimesheetParser {
             }
         }
 
-        summaries.sort_by(|a, b| a.date.cmp(&b.date));
+        summaries.sort_unstable_by(|a, b| a.date.cmp(&b.date));
         Ok(summaries)
     }
 
-    fn group_by_week(&self, summaries: Vec<DaySummary>) -> Vec<WeekSummary> {
+    fn group_by_week(&self, summaries: &[DaySummary]) -> Vec<WeekSummary> {
         let mut weeks: HashMap<NaiveDate, Vec<DaySummary>> = HashMap::new();
 
         for summary in summaries {
             let week_start = summary.date - Duration::days(summary.date.weekday().num_days_from_monday() as i64);
-            weeks.entry(week_start).or_default().push(summary);
+            weeks.entry(week_start).or_default().push(summary.clone());
         }
 
         let mut week_summaries: Vec<_> = weeks
             .into_iter()
             .map(|(week_start, mut days)| {
-                days.sort_by(|a, b| a.date.cmp(&b.date));
+                days.sort_unstable_by(|a, b| a.date.cmp(&b.date));
                 let total_duration = days
                     .iter()
                     .fold(Duration::zero(), |acc, day| acc + day.total_duration);
@@ -173,8 +180,31 @@ impl TimesheetParser {
             })
             .collect();
 
-        week_summaries.sort_by(|a, b| a.week_start.cmp(&b.week_start));
+        week_summaries.sort_unstable_by(|a, b| a.week_start.cmp(&b.week_start));
         week_summaries
+    }
+
+    fn group_by_month(&self, summaries: &[DaySummary]) -> Vec<MonthlySummary> {
+        let mut months: HashMap<(i32, u32), Duration> = HashMap::new();
+
+        for summary in summaries {
+            let key = (summary.date.year(), summary.date.month());
+            *months.entry(key).or_insert_with(Duration::zero) += summary.total_duration;
+        }
+
+        let mut monthly_summaries: Vec<_> = months
+            .into_iter()
+            .map(|((year, month), total_duration)| MonthlySummary {
+                year,
+                month,
+                total_duration,
+            })
+            .collect();
+
+        monthly_summaries.sort_unstable_by(|a, b| {
+            a.year.cmp(&b.year).then_with(|| a.month.cmp(&b.month))
+        });
+        monthly_summaries
     }
 }
 
@@ -183,6 +213,24 @@ fn format_duration(duration: Duration) -> String {
     let hours = total_minutes / 60;
     let minutes = total_minutes % 60;
     format!("{}h {:02}m", hours, minutes)
+}
+
+fn get_month_name(month: u32) -> &'static str {
+    match month {
+        1 => "January",
+        2 => "February", 
+        3 => "March",
+        4 => "April",
+        5 => "May",
+        6 => "June",
+        7 => "July",
+        8 => "August",
+        9 => "September",
+        10 => "October",
+        11 => "November",
+        12 => "December",
+        _ => "Unknown",
+    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -195,23 +243,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let parser = TimesheetParser::new()?;
     let summaries = parser.parse_directory(Path::new(directory))?;
-    let weeks = parser.group_by_week(summaries);
+    let weeks = parser.group_by_week(&summaries);
+    let months = parser.group_by_month(&summaries);
 
-    println!("Daily Summary:");
-    println!("==============");
-    for week in &weeks {
-        for day in &week.days {
-            if day.total_duration > Duration::zero() {
-                let weekday = day.date.format("%a").to_string();
-                println!("{} {:3} - {}", day.date, weekday, format_duration(day.total_duration));
-            }
-        }
-    }
+    // Calculate the date two weeks ago from today
+    let today = chrono::Local::now().date_naive();
+    let two_weeks_ago = today - Duration::days(14);
+
+    println!("Daily Summary (Last 2 Weeks):");
+    println!("==============================");
+    weeks
+        .iter()
+        .flat_map(|week| &week.days)
+        .filter(|day| day.total_duration > Duration::zero() && day.date >= two_weeks_ago)
+        .for_each(|day| {
+            let weekday = day.date.format("%a");
+            println!("{} {:3} - {}", day.date, weekday, format_duration(day.total_duration));
+        });
+
+    println!("\nMonthly Summary:");
+    println!("================");
+    months
+        .iter()
+        .filter(|month| month.total_duration > Duration::zero())
+        .for_each(|month| {
+            println!("{} {}: {}", get_month_name(month.month), month.year, format_duration(month.total_duration));
+        });
 
     println!("\nWeekly Summary:");
     println!("===============");
-    for week in &weeks {
-        if week.total_duration > Duration::zero() {
+    weeks
+        .iter()
+        .filter(|week| week.total_duration > Duration::zero())
+        .for_each(|week| {
             let week_end = week.week_start + Duration::days(6);
             println!(
                 "Week of {} - {}: {}",
@@ -219,8 +283,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 week_end,
                 format_duration(week.total_duration)
             );
-        }
-    }
+        });
 
     Ok(())
 }
@@ -353,7 +416,7 @@ Stop work 17:00
             },
         ];
 
-        let weeks = parser.group_by_week(summaries);
+        let weeks = parser.group_by_week(&summaries);
         assert_eq!(weeks.len(), 2);
         
         assert_eq!(weeks[0].days.len(), 2);
