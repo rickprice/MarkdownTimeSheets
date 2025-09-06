@@ -85,15 +85,15 @@ impl TimesheetParser {
                 let hours: u32 = caps[1].parse()?;
                 let minutes: u32 = caps[2].parse()?;
                 
-                if hours < 24 && minutes < 60 {
-                    current_entry.start_time = Some(NaiveTime::from_hms_opt(hours, minutes, 0).unwrap());
+                if let Some(time) = NaiveTime::from_hms_opt(hours, minutes, 0) {
+                    current_entry.start_time = Some(time);
                 }
             } else if let Some(caps) = self.stop_regex.captures(line) {
                 let hours: u32 = caps[1].parse()?;
                 let minutes: u32 = caps[2].parse()?;
                 
-                if hours < 24 && minutes < 60 {
-                    current_entry.end_time = Some(NaiveTime::from_hms_opt(hours, minutes, 0).unwrap());
+                if let Some(time) = NaiveTime::from_hms_opt(hours, minutes, 0) {
+                    current_entry.end_time = Some(time);
                     entries.push(current_entry);
                     current_entry = TimeEntry::new();
                 }
@@ -119,10 +119,10 @@ impl TimesheetParser {
             entries.push(current_entry);
         }
 
-        let time_entries_duration = entries
+        let time_entries_duration: Duration = entries
             .iter()
             .filter_map(|entry| entry.duration())
-            .fold(Duration::zero(), |acc, d| acc + d);
+            .sum();
         
         let total_duration = time_entries_duration + total_work_time_duration;
 
@@ -139,20 +139,18 @@ impl TimesheetParser {
             let entry = entry?;
             let path = entry.path();
 
-            if let Some(extension) = path.extension() {
-                if extension == "md" {
-                    if let Some(filename) = path.file_stem().and_then(|s| s.to_str()) {
-                        if let Ok(date) = NaiveDate::parse_from_str(filename, "%Y-%m-%d") {
-                            let content = fs::read_to_string(&path)?;
-                            let summary = self.parse_file(&content, date)?;
-                            summaries.push(summary);
-                        }
+            if path.extension().is_some_and(|ext| ext == "md") {
+                if let Some(filename) = path.file_stem().and_then(|s| s.to_str()) {
+                    if let Ok(date) = NaiveDate::parse_from_str(filename, "%Y-%m-%d") {
+                        let content = fs::read_to_string(&path)?;
+                        let summary = self.parse_file(&content, date)?;
+                        summaries.push(summary);
                     }
                 }
             }
         }
 
-        summaries.sort_unstable_by(|a, b| a.date.cmp(&b.date));
+        summaries.sort_unstable_by_key(|summary| summary.date);
         Ok(summaries)
     }
 
@@ -160,17 +158,18 @@ impl TimesheetParser {
         let mut weeks: HashMap<NaiveDate, Vec<DaySummary>> = HashMap::new();
 
         for summary in summaries {
-            let week_start = summary.date - Duration::days(summary.date.weekday().num_days_from_monday() as i64);
+            let week_start = summary.date - Duration::days(i64::from(summary.date.weekday().num_days_from_monday()));
             weeks.entry(week_start).or_default().push(summary.clone());
         }
 
         let mut week_summaries: Vec<_> = weeks
             .into_iter()
             .map(|(week_start, mut days)| {
-                days.sort_unstable_by(|a, b| a.date.cmp(&b.date));
+                days.sort_unstable_by_key(|day| day.date);
                 let total_duration = days
                     .iter()
-                    .fold(Duration::zero(), |acc, day| acc + day.total_duration);
+                    .map(|day| day.total_duration)
+                    .sum();
 
                 WeekSummary {
                     week_start,
@@ -180,7 +179,7 @@ impl TimesheetParser {
             })
             .collect();
 
-        week_summaries.sort_unstable_by(|a, b| a.week_start.cmp(&b.week_start));
+        week_summaries.sort_unstable_by_key(|week| week.week_start);
         week_summaries
     }
 
@@ -201,9 +200,7 @@ impl TimesheetParser {
             })
             .collect();
 
-        monthly_summaries.sort_unstable_by(|a, b| {
-            a.year.cmp(&b.year).then_with(|| a.month.cmp(&b.month))
-        });
+        monthly_summaries.sort_unstable_by_key(|summary| (summary.year, summary.month));
         monthly_summaries
     }
 }
@@ -215,31 +212,45 @@ fn format_duration(duration: Duration) -> String {
     format!("{}h {:02}m", hours, minutes)
 }
 
+const MONTH_NAMES: [&str; 12] = [
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December"
+];
+
 fn get_month_name(month: u32) -> &'static str {
-    match month {
-        1 => "January",
-        2 => "February", 
-        3 => "March",
-        4 => "April",
-        5 => "May",
-        6 => "June",
-        7 => "July",
-        8 => "August",
-        9 => "September",
-        10 => "October",
-        11 => "November",
-        12 => "December",
-        _ => "Unknown",
-    }
+    MONTH_NAMES.get(month.saturating_sub(1) as usize).map_or("Unknown", |&name| name)
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
-    let directory = if args.len() > 1 {
-        &args[1]
-    } else {
-        "."
-    };
+    
+    let mut directory = ".";
+    let mut weekly_hours = 40.0;
+    
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--weekly-hours" => {
+                if let Some(value) = args.get(i + 1) {
+                    weekly_hours = value.parse().unwrap_or(40.0);
+                    i += 2;
+                } else {
+                    eprintln!("Error: --weekly-hours requires a value");
+                    return Ok(());
+                }
+            }
+            "--help" | "-h" => {
+                println!("Usage: {} [directory] [--weekly-hours HOURS]", args[0]);
+                println!("  directory: Directory containing markdown timesheet files (default: current directory)");
+                println!("  --weekly-hours: Expected weekly work hours (default: 40)");
+                return Ok(());
+            }
+            _ => {
+                directory = &args[i];
+                i += 1;
+            }
+        }
+    }
 
     let parser = TimesheetParser::new()?;
     let summaries = parser.parse_directory(Path::new(directory))?;
@@ -277,12 +288,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .filter(|week| week.total_duration > Duration::zero())
         .for_each(|week| {
             let week_end = week.week_start + Duration::days(6);
-            println!(
-                "Week of {} - {}: {}",
-                week.week_start,
-                week_end,
-                format_duration(week.total_duration)
-            );
+            let actual_hours = week.total_duration.num_minutes() as f64 / 60.0;
+            let formatted_duration = format_duration(week.total_duration);
+            
+            if actual_hours < weekly_hours {
+                let difference_minutes = ((weekly_hours - actual_hours) * 60.0).round() as i64;
+                let difference_duration = Duration::minutes(difference_minutes);
+                println!(
+                    "Week of {} - {}: {} [{}h {:02}m short]",
+                    week.week_start,
+                    week_end,
+                    formatted_duration,
+                    difference_duration.num_hours(),
+                    difference_duration.num_minutes() % 60
+                );
+            } else {
+                println!(
+                    "Week of {} - {}: {}",
+                    week.week_start,
+                    week_end,
+                    formatted_duration
+                );
+            }
         });
 
     Ok(())
