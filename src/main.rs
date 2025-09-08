@@ -1,4 +1,4 @@
-use chrono::{Datelike, Duration, NaiveDate, NaiveTime};
+use chrono::{Datelike, Duration, Local, NaiveDate, NaiveTime};
 use regex::Regex;
 use std::collections::HashMap;
 use std::env;
@@ -9,6 +9,7 @@ use std::path::Path;
 struct TimeEntry {
     start_time: Option<NaiveTime>,
     end_time: Option<NaiveTime>,
+    tentative: bool,
 }
 
 impl TimeEntry {
@@ -16,6 +17,7 @@ impl TimeEntry {
         Self {
             start_time: None,
             end_time: None,
+            tentative: false,
         }
     }
 
@@ -37,6 +39,7 @@ impl TimeEntry {
 struct DaySummary {
     date: NaiveDate,
     total_duration: Duration,
+    has_tentative: bool,
 }
 
 #[derive(Debug)]
@@ -74,6 +77,8 @@ impl TimesheetParser {
         let mut entries = Vec::new();
         let mut current_entry = TimeEntry::new();
         let mut total_work_time_duration = Duration::zero();
+        let today = Local::now().date_naive();
+        let is_today = date == today;
 
         for line in content.lines() {
             if let Some(caps) = self.start_regex.captures(line) {
@@ -115,8 +120,35 @@ impl TimesheetParser {
             }
         }
 
+        // Handle incomplete entry (start time but no stop time)
         if current_entry.start_time.is_some() {
             entries.push(current_entry);
+        }
+
+        // Apply tentative time only to the last incomplete entry if it's today
+        if is_today && !entries.is_empty() {
+            let last_entry = entries.last_mut().unwrap();
+            if last_entry.start_time.is_some() && last_entry.end_time.is_none() {
+                let current_time = Local::now().time();
+                let start_time = last_entry.start_time.unwrap();
+                
+                // Calculate tentative end time (current time, but max 8 hours from start)
+                let duration_from_start = if current_time >= start_time {
+                    current_time - start_time
+                } else {
+                    // Handle overnight case (current time is next day)
+                    Duration::days(1) - (start_time - current_time)
+                };
+                
+                let tentative_end_time = if duration_from_start > Duration::hours(8) {
+                    start_time + Duration::hours(8)
+                } else {
+                    current_time
+                };
+                
+                last_entry.end_time = Some(tentative_end_time);
+                last_entry.tentative = true;
+            }
         }
 
         let time_entries_duration: Duration = entries
@@ -125,10 +157,12 @@ impl TimesheetParser {
             .sum();
         
         let total_duration = time_entries_duration + total_work_time_duration;
+        let has_tentative = entries.iter().any(|entry| entry.tentative);
 
         Ok(DaySummary {
             date,
             total_duration,
+            has_tentative,
         })
     }
 
@@ -212,6 +246,17 @@ fn format_duration(duration: Duration) -> String {
     format!("{}h {:02}m", hours, minutes)
 }
 
+fn format_duration_with_tentative(duration: Duration, has_tentative: bool) -> String {
+    let total_minutes = duration.num_minutes();
+    let hours = total_minutes / 60;
+    let minutes = total_minutes % 60;
+    if has_tentative {
+        format!("{}h {:02}m*", hours, minutes)
+    } else {
+        format!("{}h {:02}m", hours, minutes)
+    }
+}
+
 const MONTH_NAMES: [&str; 12] = [
     "January", "February", "March", "April", "May", "June",
     "July", "August", "September", "October", "November", "December"
@@ -269,7 +314,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .filter(|day| day.total_duration > Duration::zero() && day.date >= two_weeks_ago)
         .for_each(|day| {
             let weekday = day.date.format("%a");
-            println!("{} {:3} - {}", day.date, weekday, format_duration(day.total_duration));
+            println!("{} {:3} - {}", day.date, weekday, format_duration_with_tentative(day.total_duration, day.has_tentative));
         });
 
     println!("\nMonthly Summary:");
@@ -432,14 +477,17 @@ Stop work 17:00
             DaySummary {
                 date: NaiveDate::from_ymd_opt(2025, 8, 25).unwrap(), // Monday
                 total_duration: Duration::hours(8),
+                has_tentative: false,
             },
             DaySummary {
                 date: NaiveDate::from_ymd_opt(2025, 8, 26).unwrap(), // Tuesday
                 total_duration: Duration::hours(7),
+                has_tentative: false,
             },
             DaySummary {
                 date: NaiveDate::from_ymd_opt(2025, 9, 1).unwrap(), // Next Monday
                 total_duration: Duration::hours(6),
+                has_tentative: false,
             },
         ];
 
@@ -723,5 +771,66 @@ Stat holiday
 
         let summary = parser.parse_file(content, date).unwrap();
         assert_eq!(summary.total_duration.num_hours(), 27);
+    }
+
+    #[test]
+    fn test_incomplete_entry_not_today() {
+        let parser = TimesheetParser::new().unwrap();
+        let content = "Start work 9:00\nSome work done but forgot to stop";
+        let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap(); // Not today
+
+        let summary = parser.parse_file(content, date).unwrap();
+        assert_eq!(summary.total_duration, Duration::zero());
+        assert!(!summary.has_tentative);
+    }
+
+    #[test] 
+    fn test_format_duration_with_tentative() {
+        let duration = Duration::hours(5) + Duration::minutes(30);
+        assert_eq!(format_duration_with_tentative(duration, false), "5h 30m");
+        assert_eq!(format_duration_with_tentative(duration, true), "5h 30m*");
+    }
+
+    #[test]
+    fn test_multiple_incomplete_entries_only_last_gets_tentative() {
+        let parser = TimesheetParser::new().unwrap();
+        let content = r#"
+Start work 8:00
+Stop work 12:00
+Start work 13:00
+Start work 14:00
+"#;
+        let today = Local::now().date_naive();
+        
+        let summary = parser.parse_file(content, today).unwrap();
+        // Should be: 4 hours (8-12) + tentative time from 14:00 to now (capped at 8 hours)
+        // The 13:00 start should be ignored since it was overridden by 14:00 start
+        assert!(summary.has_tentative);
+        // The exact duration will depend on current time, but it should be > 4 hours
+        assert!(summary.total_duration > Duration::hours(4));
+    }
+
+    #[test]
+    fn test_current_time_used_as_stop_time_for_last_entry() {
+        use chrono::Timelike;
+        
+        let parser = TimesheetParser::new().unwrap();
+        // Use a start time very close to current time to avoid 8-hour cap issues
+        let current_time = Local::now().time();
+        let start_time = if current_time.hour() > 0 {
+            NaiveTime::from_hms_opt(current_time.hour() - 1, current_time.minute(), 0).unwrap()
+        } else {
+            NaiveTime::from_hms_opt(23, current_time.minute(), 0).unwrap()
+        };
+        
+        let content = format!("Start work {}:{:02}", start_time.hour(), start_time.minute());
+        let today = Local::now().date_naive();
+        
+        let summary = parser.parse_file(&content, today).unwrap();
+        assert!(summary.has_tentative);
+        
+        // Should have some duration (at least a few minutes, at most 8 hours)
+        assert!(summary.total_duration > Duration::minutes(0));
+        assert!(summary.total_duration <= Duration::hours(8));
     }
 }
