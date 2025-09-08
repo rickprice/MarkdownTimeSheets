@@ -40,6 +40,7 @@ struct DaySummary {
     date: NaiveDate,
     total_duration: Duration,
     has_tentative: bool,
+    has_incomplete: bool,
 }
 
 #[derive(Debug)]
@@ -158,11 +159,21 @@ impl TimesheetParser {
         
         let total_duration = time_entries_duration + total_work_time_duration;
         let has_tentative = entries.iter().any(|entry| entry.tentative);
+        
+        // Check for incomplete entries (start time but no end time, excluding tentative ones)
+        let has_incomplete = if is_today {
+            // For today, only count as incomplete if there are non-tentative incomplete entries
+            entries.iter().any(|entry| entry.start_time.is_some() && entry.end_time.is_none() && !entry.tentative)
+        } else {
+            // For other days, any incomplete entry is flagged
+            entries.iter().any(|entry| entry.start_time.is_some() && entry.end_time.is_none())
+        };
 
         Ok(DaySummary {
             date,
             total_duration,
             has_tentative,
+            has_incomplete,
         })
     }
 
@@ -246,14 +257,26 @@ fn format_duration(duration: Duration) -> String {
     format!("{}h {:02}m", hours, minutes)
 }
 
-fn format_duration_with_tentative(duration: Duration, has_tentative: bool) -> String {
+fn format_duration_with_flags(duration: Duration, has_tentative: bool, has_incomplete: bool) -> String {
     let total_minutes = duration.num_minutes();
     let hours = total_minutes / 60;
     let minutes = total_minutes % 60;
+    
+    let mut flags = String::new();
     if has_tentative {
-        format!("{}h {:02}m*", hours, minutes)
-    } else {
+        flags.push('*');
+    }
+    if has_incomplete {
+        if !flags.is_empty() {
+            flags.push(' ');
+        }
+        flags.push_str("E!");
+    }
+    
+    if flags.is_empty() {
         format!("{}h {:02}m", hours, minutes)
+    } else {
+        format!("{}h {:02}m {}", hours, minutes, flags)
     }
 }
 
@@ -314,7 +337,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .filter(|day| day.total_duration > Duration::zero() && day.date >= two_weeks_ago)
         .for_each(|day| {
             let weekday = day.date.format("%a");
-            println!("{} {:3} - {}", day.date, weekday, format_duration_with_tentative(day.total_duration, day.has_tentative));
+            println!("{} {:3} - {}", day.date, weekday, format_duration_with_flags(day.total_duration, day.has_tentative, day.has_incomplete));
         });
 
     println!("\nMonthly Summary:");
@@ -478,16 +501,19 @@ Stop work 17:00
                 date: NaiveDate::from_ymd_opt(2025, 8, 25).unwrap(), // Monday
                 total_duration: Duration::hours(8),
                 has_tentative: false,
+                has_incomplete: false,
             },
             DaySummary {
                 date: NaiveDate::from_ymd_opt(2025, 8, 26).unwrap(), // Tuesday
                 total_duration: Duration::hours(7),
                 has_tentative: false,
+                has_incomplete: false,
             },
             DaySummary {
                 date: NaiveDate::from_ymd_opt(2025, 9, 1).unwrap(), // Next Monday
                 total_duration: Duration::hours(6),
                 has_tentative: false,
+                has_incomplete: false,
             },
         ];
 
@@ -787,8 +813,8 @@ Stat holiday
     #[test] 
     fn test_format_duration_with_tentative() {
         let duration = Duration::hours(5) + Duration::minutes(30);
-        assert_eq!(format_duration_with_tentative(duration, false), "5h 30m");
-        assert_eq!(format_duration_with_tentative(duration, true), "5h 30m*");
+        assert_eq!(format_duration_with_flags(duration, false, false), "5h 30m");
+        assert_eq!(format_duration_with_flags(duration, true, false), "5h 30m *");
     }
 
     #[test]
@@ -832,5 +858,48 @@ Start work 14:00
         // Should have some duration (at least a few minutes, at most 8 hours)
         assert!(summary.total_duration > Duration::minutes(0));
         assert!(summary.total_duration <= Duration::hours(8));
+    }
+
+    #[test]
+    fn test_incomplete_entry_flags() {
+        let parser = TimesheetParser::new().unwrap();
+        
+        // Test incomplete entry on a non-today date
+        let content = "Start work 9:00\nSome work done but forgot to stop";
+        let past_date = NaiveDate::from_ymd_opt(2025, 8, 20).unwrap();
+        
+        let summary = parser.parse_file(content, past_date).unwrap();
+        assert!(summary.has_incomplete);
+        assert!(!summary.has_tentative);
+        
+        // Test complete entries
+        let content = "Start work 9:00\nStop work 17:00";
+        let summary = parser.parse_file(content, past_date).unwrap();
+        assert!(!summary.has_incomplete);
+        assert!(!summary.has_tentative);
+        
+        // Test today with incomplete entry (should get tentative, not incomplete)
+        let content = "Start work 16:00";
+        let today = Local::now().date_naive();
+        let summary = parser.parse_file(content, today).unwrap();
+        assert!(!summary.has_incomplete); // Today's incomplete entries become tentative
+        assert!(summary.has_tentative);
+    }
+
+    #[test]
+    fn test_format_duration_with_flags() {
+        let duration = Duration::hours(5) + Duration::minutes(30);
+        
+        // No flags
+        assert_eq!(format_duration_with_flags(duration, false, false), "5h 30m");
+        
+        // Tentative only
+        assert_eq!(format_duration_with_flags(duration, true, false), "5h 30m *");
+        
+        // Incomplete only
+        assert_eq!(format_duration_with_flags(duration, false, true), "5h 30m E!");
+        
+        // Both flags
+        assert_eq!(format_duration_with_flags(duration, true, true), "5h 30m * E!");
     }
 }
