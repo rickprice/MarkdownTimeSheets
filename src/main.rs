@@ -62,15 +62,17 @@ struct TimesheetParser {
     stop_regex: Regex,
     work_time_regex: Regex,
     holiday_regex: Regex,
+    debug_mode: bool,
 }
 
 impl TimesheetParser {
-    fn new() -> Result<Self, regex::Error> {
+    fn new(debug_mode: bool) -> Result<Self, regex::Error> {
         Ok(Self {
             start_regex: Regex::new(r"(?i)start(?:ed)?\s+work(?:ing)?(?:\s+at)?\s+(\d{1,2}):(\d{2})")?,
             stop_regex: Regex::new(r"(?i)stop(?:ped)?\s+work(?:ing)?(?:\s+at)?\s+(\d{1,2}):(\d{2})")?,
             work_time_regex: Regex::new(r"(?i)work\s+time\s+(\d+)\s+(minutes?|hours?)")?,
             holiday_regex: Regex::new(r"(?i)(stat(?:utory)?\s+holiday|pto|holiday\s+day)")?,
+            debug_mode,
         })
     }
 
@@ -80,10 +82,22 @@ impl TimesheetParser {
         let mut total_work_time_duration = Duration::zero();
         let today = Local::now().date_naive();
         let is_today = date == today;
+        let mut has_orphaned_stop = false;
 
-        for line in content.lines() {
+        if self.debug_mode {
+            eprintln!("DEBUG: Parsing file for date: {}", date);
+            eprintln!("DEBUG: Is today: {}", is_today);
+            eprintln!("DEBUG: File content has {} lines", content.lines().count());
+        }
+
+        for (line_num, line) in content.lines().enumerate() {
+            let line_num = line_num + 1; // 1-indexed line numbers
             if let Some(caps) = self.start_regex.captures(line) {
                 if current_entry.start_time.is_some() {
+                    if self.debug_mode {
+                        eprintln!("DEBUG: Line {}: Found overlapping start work entry (previous incomplete entry at {:?})", 
+                                line_num, current_entry.start_time);
+                    }
                     entries.push(current_entry);
                     current_entry = TimeEntry::new();
                 }
@@ -93,15 +107,37 @@ impl TimesheetParser {
                 
                 if let Some(time) = NaiveTime::from_hms_opt(hours, minutes, 0) {
                     current_entry.start_time = Some(time);
+                    if self.debug_mode {
+                        eprintln!("DEBUG: Line {}: Found start work at {} (\"{}\")", line_num, time, line.trim());
+                    }
+                } else if self.debug_mode {
+                    eprintln!("DEBUG: Line {}: Invalid time format {}:{:02} in start work entry", line_num, hours, minutes);
                 }
             } else if let Some(caps) = self.stop_regex.captures(line) {
                 let hours: u32 = caps[1].parse()?;
                 let minutes: u32 = caps[2].parse()?;
                 
                 if let Some(time) = NaiveTime::from_hms_opt(hours, minutes, 0) {
-                    current_entry.end_time = Some(time);
-                    entries.push(current_entry);
-                    current_entry = TimeEntry::new();
+                    if current_entry.start_time.is_some() {
+                        // Normal case: stop time for existing start time
+                        current_entry.end_time = Some(time);
+                        if self.debug_mode {
+                            let duration = current_entry.duration().unwrap_or(Duration::zero());
+                            eprintln!("DEBUG: Line {}: Found stop work at {} (duration: {:?}) (\"{}\")", 
+                                    line_num, time, duration, line.trim());
+                        }
+                        entries.push(current_entry);
+                        current_entry = TimeEntry::new();
+                    } else {
+                        // Error case: stop time without start time
+                        has_orphaned_stop = true;
+                        if self.debug_mode {
+                            eprintln!("ERROR: Line {}: Found stop work at {} without corresponding start work (\"{}\")", 
+                                    line_num, time, line.trim());
+                        }
+                    }
+                } else if self.debug_mode {
+                    eprintln!("DEBUG: Line {}: Invalid time format {}:{:02} in stop work entry", line_num, hours, minutes);
                 }
             } else if let Some(caps) = self.work_time_regex.captures(line) {
                 let amount: u32 = caps[1].parse()?;
@@ -115,14 +151,25 @@ impl TimesheetParser {
                     Duration::zero()
                 };
                 
+                if self.debug_mode {
+                    eprintln!("DEBUG: Line {}: Found work time {} {} (duration: {:?}) (\"{}\")", 
+                            line_num, amount, unit, duration, line.trim());
+                }
                 total_work_time_duration += duration;
             } else if self.holiday_regex.is_match(line) {
+                if self.debug_mode {
+                    eprintln!("DEBUG: Line {}: Found holiday entry (8h 00m) (\"{}\")", 
+                            line_num, line.trim());
+                }
                 total_work_time_duration += Duration::hours(8);
             }
         }
 
         // Handle incomplete entry (start time but no stop time)
         if current_entry.start_time.is_some() {
+            if self.debug_mode {
+                eprintln!("DEBUG: End of file: Found incomplete entry with start time {:?}", current_entry.start_time);
+            }
             entries.push(current_entry);
         }
 
@@ -133,6 +180,11 @@ impl TimesheetParser {
                 let current_time = Local::now().time();
                 let start_time = last_entry.start_time.unwrap();
                 
+                if self.debug_mode {
+                    eprintln!("DEBUG: Applying tentative time to last incomplete entry");
+                    eprintln!("DEBUG: Start time: {}, Current time: {}", start_time, current_time);
+                }
+                
                 // Calculate tentative end time (current time, but max 8 hours from start)
                 let duration_from_start = if current_time >= start_time {
                     current_time - start_time
@@ -142,13 +194,24 @@ impl TimesheetParser {
                 };
                 
                 let tentative_end_time = if duration_from_start > Duration::hours(8) {
+                    if self.debug_mode {
+                        eprintln!("DEBUG: Duration {:?} exceeds 8 hours, capping at 8 hours", duration_from_start);
+                    }
                     start_time + Duration::hours(8)
                 } else {
+                    if self.debug_mode {
+                        eprintln!("DEBUG: Using current time as end time (duration: {:?})", duration_from_start);
+                    }
                     current_time
                 };
                 
                 last_entry.end_time = Some(tentative_end_time);
                 last_entry.tentative = true;
+                
+                if self.debug_mode {
+                    eprintln!("DEBUG: Tentative end time: {}, Final duration: {:?}", 
+                            tentative_end_time, last_entry.duration());
+                }
             }
         }
 
@@ -160,14 +223,34 @@ impl TimesheetParser {
         let total_duration = time_entries_duration + total_work_time_duration;
         let has_tentative = entries.iter().any(|entry| entry.tentative);
         
-        // Check for incomplete entries (start time but no end time, excluding tentative ones)
+        // Check for incomplete entries (start time but no end time, excluding tentative ones) or orphaned stops
         let has_incomplete = if is_today {
-            // For today, only count as incomplete if there are non-tentative incomplete entries
-            entries.iter().any(|entry| entry.start_time.is_some() && entry.end_time.is_none() && !entry.tentative)
+            // For today, only count as incomplete if there are non-tentative incomplete entries or orphaned stops
+            entries.iter().any(|entry| entry.start_time.is_some() && entry.end_time.is_none() && !entry.tentative) || has_orphaned_stop
         } else {
-            // For other days, any incomplete entry is flagged
-            entries.iter().any(|entry| entry.start_time.is_some() && entry.end_time.is_none())
+            // For other days, any incomplete entry or orphaned stop is flagged
+            entries.iter().any(|entry| entry.start_time.is_some() && entry.end_time.is_none()) || has_orphaned_stop
         };
+
+        if self.debug_mode {
+            eprintln!("DEBUG: Parsing complete for {}", date);
+            eprintln!("DEBUG: Found {} time entries", entries.len());
+            eprintln!("DEBUG: Time entries duration: {:?}", time_entries_duration);
+            eprintln!("DEBUG: Work time duration: {:?}", total_work_time_duration);
+            eprintln!("DEBUG: Total duration: {:?}", total_duration);
+            eprintln!("DEBUG: Has tentative: {}", has_tentative);
+            eprintln!("DEBUG: Has incomplete/errors: {}", has_incomplete);
+            if has_incomplete {
+                let incomplete_entries = entries.iter().filter(|entry| entry.start_time.is_some() && entry.end_time.is_none() && !entry.tentative).count();
+                if incomplete_entries > 0 {
+                    eprintln!("ERROR: Found {} incomplete time entries (start without stop)", incomplete_entries);
+                }
+                if has_orphaned_stop {
+                    eprintln!("ERROR: Found orphaned stop entries (stop without start)");
+                }
+            }
+            eprintln!("DEBUG: ----------------------------------------");
+        }
 
         Ok(DaySummary {
             date,
@@ -294,6 +377,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     let mut directory = ".";
     let mut weekly_hours = 40.0;
+    let mut debug_mode = false;
     
     let mut i = 1;
     while i < args.len() {
@@ -307,10 +391,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     return Ok(());
                 }
             }
+            "--debug" => {
+                debug_mode = true;
+                i += 1;
+            }
             "--help" | "-h" => {
-                println!("Usage: {} [directory] [--weekly-hours HOURS]", args[0]);
+                println!("Usage: {} [directory] [--weekly-hours HOURS] [--debug]", args[0]);
                 println!("  directory: Directory containing markdown timesheet files (default: current directory)");
                 println!("  --weekly-hours: Expected weekly work hours (default: 40)");
+                println!("  --debug: Show detailed debug information and error locations");
                 return Ok(());
             }
             _ => {
@@ -320,7 +409,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let parser = TimesheetParser::new()?;
+    let parser = TimesheetParser::new(debug_mode)?;
     let summaries = parser.parse_directory(Path::new(directory))?;
     let weeks = parser.group_by_week(&summaries);
     let months = parser.group_by_month(&summaries);
@@ -334,7 +423,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     weeks
         .iter()
         .flat_map(|week| &week.days)
-        .filter(|day| day.total_duration > Duration::zero() && day.date >= two_weeks_ago)
+        .filter(|day| (day.total_duration > Duration::zero() || day.has_incomplete) && day.date >= two_weeks_ago)
         .for_each(|day| {
             let weekday = day.date.format("%a");
             println!("{} {:3} - {}", day.date, weekday, format_duration_with_flags(day.total_duration, day.has_tentative, day.has_incomplete));
@@ -419,13 +508,13 @@ mod tests {
 
     #[test]
     fn test_parser_creation() {
-        let parser = TimesheetParser::new();
+        let parser = TimesheetParser::new(false);
         assert!(parser.is_ok());
     }
 
     #[test]
     fn test_parse_simple_entry() {
-        let parser = TimesheetParser::new().unwrap();
+        let parser = TimesheetParser::new(false).unwrap();
         let content = "Start work 9:00\nSome notes\nStop work 17:30";
         let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap();
 
@@ -437,7 +526,7 @@ mod tests {
 
     #[test]
     fn test_parse_multiple_entries() {
-        let parser = TimesheetParser::new().unwrap();
+        let parser = TimesheetParser::new(false).unwrap();
         let content = r#"
 Start work 9:00
 Stop work 12:00
@@ -453,7 +542,7 @@ Stop work 17:00
 
     #[test]
     fn test_parse_case_insensitive() {
-        let parser = TimesheetParser::new().unwrap();
+        let parser = TimesheetParser::new(false).unwrap();
         let content = "START WORK 9:00\nstop Work 17:30";
         let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap();
 
@@ -463,7 +552,7 @@ Stop work 17:00
 
     #[test]
     fn test_parse_incomplete_entry() {
-        let parser = TimesheetParser::new().unwrap();
+        let parser = TimesheetParser::new(false).unwrap();
         let content = "Start work 9:00\nSome work done but forgot to stop";
         let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap();
 
@@ -473,7 +562,7 @@ Stop work 17:00
 
     #[test]
     fn test_parse_invalid_times() {
-        let parser = TimesheetParser::new().unwrap();
+        let parser = TimesheetParser::new(false).unwrap();
         let content = "Start work 25:00\nStop work 12:70";
         let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap();
 
@@ -495,7 +584,7 @@ Stop work 17:00
 
     #[test]
     fn test_group_by_week() {
-        let parser = TimesheetParser::new().unwrap();
+        let parser = TimesheetParser::new(false).unwrap();
         let summaries = vec![
             DaySummary {
                 date: NaiveDate::from_ymd_opt(2025, 8, 25).unwrap(), // Monday
@@ -529,7 +618,7 @@ Stop work 17:00
 
     #[test]
     fn test_overlapping_entries() {
-        let parser = TimesheetParser::new().unwrap();
+        let parser = TimesheetParser::new(false).unwrap();
         let content = "Start work 9:00\nStart work 10:00\nStop work 17:00";
         let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap();
 
@@ -539,7 +628,7 @@ Stop work 17:00
 
     #[test]
     fn test_military_time_formats() {
-        let parser = TimesheetParser::new().unwrap();
+        let parser = TimesheetParser::new(false).unwrap();
         let content = "Start work 8:15\nStop work 16:45";
         let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap();
 
@@ -550,7 +639,7 @@ Stop work 17:00
 
     #[test]
     fn test_single_digit_hours() {
-        let parser = TimesheetParser::new().unwrap();
+        let parser = TimesheetParser::new(false).unwrap();
         let content = "Start work 9:00\nStop work 5:00";
         let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap();
 
@@ -560,7 +649,7 @@ Stop work 17:00
 
     #[test]
     fn test_empty_file() {
-        let parser = TimesheetParser::new().unwrap();
+        let parser = TimesheetParser::new(false).unwrap();
         let content = "";
         let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap();
 
@@ -570,7 +659,7 @@ Stop work 17:00
 
     #[test]
     fn test_no_matching_lines() {
-        let parser = TimesheetParser::new().unwrap();
+        let parser = TimesheetParser::new(false).unwrap();
         let content = "# Daily Notes\n\nWorked on project today.\nHad meetings.";
         let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap();
 
@@ -580,7 +669,7 @@ Stop work 17:00
 
     #[test]
     fn test_parse_different_formats() {
-        let parser = TimesheetParser::new().unwrap();
+        let parser = TimesheetParser::new(false).unwrap();
         let content = r#"
 Started working at 8:30
 Stopped working at 12:00
@@ -598,7 +687,7 @@ Stopped working 21:00
 
     #[test]
     fn test_work_time_minutes() {
-        let parser = TimesheetParser::new().unwrap();
+        let parser = TimesheetParser::new(false).unwrap();
         let content = "Work time 90 minutes read textbook";
         let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap();
 
@@ -609,7 +698,7 @@ Stopped working 21:00
 
     #[test]
     fn test_work_time_hour() {
-        let parser = TimesheetParser::new().unwrap();
+        let parser = TimesheetParser::new(false).unwrap();
         let content = "Work time 1 hour did other work";
         let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap();
 
@@ -620,7 +709,7 @@ Stopped working 21:00
 
     #[test]
     fn test_work_time_hours_plural() {
-        let parser = TimesheetParser::new().unwrap();
+        let parser = TimesheetParser::new(false).unwrap();
         let content = "Work time 3 hours completed project";
         let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap();
 
@@ -631,7 +720,7 @@ Stopped working 21:00
 
     #[test]
     fn test_work_time_mixed_with_start_stop() {
-        let parser = TimesheetParser::new().unwrap();
+        let parser = TimesheetParser::new(false).unwrap();
         let content = r#"
 Start work 9:00
 Stop work 12:00
@@ -647,7 +736,7 @@ Work time 1 hour did other work
 
     #[test]
     fn test_work_time_case_insensitive() {
-        let parser = TimesheetParser::new().unwrap();
+        let parser = TimesheetParser::new(false).unwrap();
         let content = "WORK TIME 45 MINUTES testing";
         let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap();
 
@@ -657,7 +746,7 @@ Work time 1 hour did other work
 
     #[test]
     fn test_stat_holiday() {
-        let parser = TimesheetParser::new().unwrap();
+        let parser = TimesheetParser::new(false).unwrap();
         let content = "Stat holiday";
         let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap();
 
@@ -667,7 +756,7 @@ Work time 1 hour did other work
 
     #[test]
     fn test_statutory_holiday() {
-        let parser = TimesheetParser::new().unwrap();
+        let parser = TimesheetParser::new(false).unwrap();
         let content = "Statutory holiday";
         let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap();
 
@@ -677,7 +766,7 @@ Work time 1 hour did other work
 
     #[test]
     fn test_holiday_case_insensitive() {
-        let parser = TimesheetParser::new().unwrap();
+        let parser = TimesheetParser::new(false).unwrap();
         let content = "STAT HOLIDAY";
         let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap();
 
@@ -687,7 +776,7 @@ Work time 1 hour did other work
 
     #[test]
     fn test_holiday_with_context() {
-        let parser = TimesheetParser::new().unwrap();
+        let parser = TimesheetParser::new(false).unwrap();
         let content = "Today was a stat holiday - Labour Day";
         let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap();
 
@@ -697,7 +786,7 @@ Work time 1 hour did other work
 
     #[test]
     fn test_holiday_mixed_with_other_entries() {
-        let parser = TimesheetParser::new().unwrap();
+        let parser = TimesheetParser::new(false).unwrap();
         let content = r#"
 Start work 9:00
 Stop work 12:00
@@ -712,7 +801,7 @@ Work time 1 hour extra project
 
     #[test]
     fn test_multiple_holidays_same_day() {
-        let parser = TimesheetParser::new().unwrap();
+        let parser = TimesheetParser::new(false).unwrap();
         let content = r#"
 Stat holiday
 Statutory holiday mentioned again
@@ -725,7 +814,7 @@ Statutory holiday mentioned again
 
     #[test]
     fn test_pto() {
-        let parser = TimesheetParser::new().unwrap();
+        let parser = TimesheetParser::new(false).unwrap();
         let content = "PTO";
         let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap();
 
@@ -735,7 +824,7 @@ Statutory holiday mentioned again
 
     #[test]
     fn test_pto_case_insensitive() {
-        let parser = TimesheetParser::new().unwrap();
+        let parser = TimesheetParser::new(false).unwrap();
         let content = "pto";
         let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap();
 
@@ -745,7 +834,7 @@ Statutory holiday mentioned again
 
     #[test]
     fn test_pto_with_context() {
-        let parser = TimesheetParser::new().unwrap();
+        let parser = TimesheetParser::new(false).unwrap();
         let content = "Taking PTO today for vacation";
         let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap();
 
@@ -755,7 +844,7 @@ Statutory holiday mentioned again
 
     #[test]
     fn test_holiday_day() {
-        let parser = TimesheetParser::new().unwrap();
+        let parser = TimesheetParser::new(false).unwrap();
         let content = "Holiday day";
         let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap();
 
@@ -765,7 +854,7 @@ Statutory holiday mentioned again
 
     #[test]
     fn test_holiday_day_case_insensitive() {
-        let parser = TimesheetParser::new().unwrap();
+        let parser = TimesheetParser::new(false).unwrap();
         let content = "HOLIDAY DAY";
         let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap();
 
@@ -775,7 +864,7 @@ Statutory holiday mentioned again
 
     #[test]
     fn test_holiday_day_with_context() {
-        let parser = TimesheetParser::new().unwrap();
+        let parser = TimesheetParser::new(false).unwrap();
         let content = "Christmas is a holiday day";
         let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap();
 
@@ -785,7 +874,7 @@ Statutory holiday mentioned again
 
     #[test]
     fn test_mixed_holiday_types() {
-        let parser = TimesheetParser::new().unwrap();
+        let parser = TimesheetParser::new(false).unwrap();
         let content = r#"
 Start work 9:00
 Stop work 12:00
@@ -801,7 +890,7 @@ Stat holiday
 
     #[test]
     fn test_incomplete_entry_not_today() {
-        let parser = TimesheetParser::new().unwrap();
+        let parser = TimesheetParser::new(false).unwrap();
         let content = "Start work 9:00\nSome work done but forgot to stop";
         let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap(); // Not today
 
@@ -819,7 +908,7 @@ Stat holiday
 
     #[test]
     fn test_multiple_incomplete_entries_only_last_gets_tentative() {
-        let parser = TimesheetParser::new().unwrap();
+        let parser = TimesheetParser::new(false).unwrap();
         let content = r#"
 Start work 8:00
 Stop work 12:00
@@ -840,7 +929,7 @@ Start work 14:00
     fn test_current_time_used_as_stop_time_for_last_entry() {
         use chrono::Timelike;
         
-        let parser = TimesheetParser::new().unwrap();
+        let parser = TimesheetParser::new(false).unwrap();
         // Use a start time very close to current time to avoid 8-hour cap issues
         let current_time = Local::now().time();
         let start_time = if current_time.hour() > 0 {
@@ -862,7 +951,7 @@ Start work 14:00
 
     #[test]
     fn test_incomplete_entry_flags() {
-        let parser = TimesheetParser::new().unwrap();
+        let parser = TimesheetParser::new(false).unwrap();
         
         // Test incomplete entry on a non-today date
         let content = "Start work 9:00\nSome work done but forgot to stop";
@@ -884,6 +973,39 @@ Start work 14:00
         let summary = parser.parse_file(content, today).unwrap();
         assert!(!summary.has_incomplete); // Today's incomplete entries become tentative
         assert!(summary.has_tentative);
+    }
+
+    #[test]
+    fn test_orphaned_stop_entry_flags() {
+        let parser = TimesheetParser::new(false).unwrap();
+        
+        // Test orphaned stop entry on a non-today date
+        let content = "Some work done\nStop work 17:00";
+        let past_date = NaiveDate::from_ymd_opt(2025, 8, 20).unwrap();
+        
+        let summary = parser.parse_file(content, past_date).unwrap();
+        assert!(summary.has_incomplete); // Orphaned stop should flag as incomplete
+        assert!(!summary.has_tentative);
+        assert_eq!(summary.total_duration, Duration::zero()); // No duration from orphaned stop
+        
+        // Test orphaned stop on today's date
+        let content = "Some work done\nStop work 17:00";
+        let today = Local::now().date_naive();
+        let summary = parser.parse_file(content, today).unwrap();
+        assert!(summary.has_incomplete); // Orphaned stop should still flag as incomplete even for today
+        assert!(!summary.has_tentative);
+        
+        // Test mixed: valid entry + orphaned stop
+        let content = r#"
+Start work 9:00
+Stop work 12:00
+Some notes
+Stop work 17:00
+"#;
+        let summary = parser.parse_file(content, past_date).unwrap();
+        assert!(summary.has_incomplete); // Should flag due to orphaned stop
+        assert!(!summary.has_tentative);
+        assert_eq!(summary.total_duration, Duration::hours(3)); // Only the valid 9-12 entry counts
     }
 
     #[test]
