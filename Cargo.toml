@@ -1,9 +1,12 @@
 [package]
 name = "markdown_timesheet"
-version = "0.7.0"
+version = "0.7.1"
 edition = "2021"
 description = "A tool for processing markdown files to extract and format timesheet data"
 license = "MIT"
+documentation = "https://github.com/rickprice/MarkdownTimeSheets"
+homepage = "https://github.com/rickprice/MarkdownTimeSheets"
+repository = "https://github.com/rickprice/MarkdownTimeSheets"
 
 [dependencies]
 chrono = { version = "0.4", features = ["serde"] }
