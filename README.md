@@ -19,6 +19,7 @@ This tool parses markdown files containing time entries in natural language form
 - **Daily Summaries**: Shows total hours worked each day (filtered to last 2 weeks)
 - **Weekly Summaries**: Groups days by week with shortage indicators
 - **Monthly Summaries**: Shows total hours by month
+- **Status Bar Mode**: Compact summary for current day and week, perfect for status bars
 - **Flexible Time Format**: Supports both 12-hour and 24-hour time formats
 
 ## Usage
@@ -38,6 +39,12 @@ cargo run --weekly-hours 37.5
 # Combined options
 cargo run /path/to/timesheets --weekly-hours 35
 
+# Status bar summary (compact output for current day/week)
+cargo run -- --summarize
+
+# Status bar with custom weekly hours
+cargo run -- --summarize --weekly-hours 35
+
 # Show help
 cargo run -- --help
 ```
@@ -46,6 +53,8 @@ cargo run -- --help
 
 - `directory`: Directory containing markdown timesheet files (default: current directory)
 - `--weekly-hours HOURS`: Expected weekly work hours for shortage calculation (default: 40)
+- `--summarize`: Show compact current day and week summary for status bar
+- `--debug`: Show detailed debug information and error locations
 - `--help`, `-h`: Show usage information
 
 ## File Format
@@ -132,6 +141,39 @@ Week of 2025-09-01 - 2025-09-07: 42h 30m
 ```
 
 The weekly summary shows shortages when using the default 40-hour target. Weeks that meet or exceed the target show no shortage indicator.
+
+## Status Bar Output
+
+When using the `--summarize` flag, the tool outputs a compact single-line format perfect for status bars:
+
+```
+Today: 5h 30m * | Week: 32h 15m (7.8h short)
+```
+
+### Status Indicators
+
+- **`*`**: Tentative time (current incomplete session still running)
+- **`E!`**: Error flag (incomplete or orphaned time entries)
+- **`(X.Xh short)`**: Hours remaining to meet weekly target
+
+### Examples
+
+```bash
+# Normal completed day
+Today: 8h 00m | Week: 40h 00m
+
+# Day with tentative time (currently working)  
+Today: 5h 30m * | Week: 32h 15m (7.8h short)
+
+# Day with errors (incomplete entries)
+Today: 3h 45m E! | Week: 25h 30m (14.5h short)
+
+# No data available
+Today: No data | Week: No data
+
+# Week target exceeded
+Today: 9h 15m | Week: 42h 30m
+```
 
 ## Testing
 
