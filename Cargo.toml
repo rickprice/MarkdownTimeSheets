@@ -1,7 +1,8 @@
 [package]
 name = "markdown_timesheet"
 version = "0.8.0"
-edition = "2021"
+edition = "2024"
+rust-version = "1.85"
 description = "A tool for processing markdown files to extract and format timesheet data"
 license = "MIT"
 documentation = "https://github.com/rickprice/MarkdownTimeSheets"

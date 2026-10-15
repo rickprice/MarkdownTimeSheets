@@ -115,7 +115,7 @@ The parser recognizes these patterns (case insensitive):
 
 ## Requirements
 
-- Rust 2021 edition or later
+- Rust 1.85 or later (2024 edition)
 - Dependencies: chrono, regex
 
 ## Example Output

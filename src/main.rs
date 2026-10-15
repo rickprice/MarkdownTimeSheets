@@ -68,8 +68,12 @@ struct TimesheetParser {
 impl TimesheetParser {
     fn new(debug_mode: bool) -> Result<Self, regex::Error> {
         Ok(Self {
-            start_regex: Regex::new(r"(?i)start(?:ed)?\s+work(?:ing)?(?:\s+at)?\s+(\d{1,2}):(\d{2})")?,
-            stop_regex: Regex::new(r"(?i)stop(?:ped)?\s+work(?:ing)?(?:\s+at)?\s+(\d{1,2}):(\d{2})")?,
+            start_regex: Regex::new(
+                r"(?i)start(?:ed)?\s+work(?:ing)?(?:\s+at)?\s+(\d{1,2}):(\d{2})",
+            )?,
+            stop_regex: Regex::new(
+                r"(?i)stop(?:ped)?\s+work(?:ing)?(?:\s+at)?\s+(\d{1,2}):(\d{2})",
+            )?,
             work_time_regex: Regex::new(r"(?i)work\s+time\s+(\d+)\s+(minutes?|hours?)")?,
             holiday_regex: Regex::new(r"(?i)(stat(?:utory)?\s+holiday|pto|holiday\s+day)")?,
             debug_mode,
@@ -82,61 +86,79 @@ impl TimesheetParser {
 
         if is_today && !entries.is_empty() {
             let last_entry = entries.last_mut().unwrap();
-            if last_entry.start_time.is_some() && last_entry.end_time.is_none() {
+            if let (Some(start_time), None) = (last_entry.start_time, last_entry.end_time) {
                 let current_time = Local::now().time();
-                let start_time = last_entry.start_time.unwrap();
-                
+
                 if self.debug_mode {
                     eprintln!("DEBUG: Applying tentative time to last incomplete entry");
                     eprintln!("DEBUG: Start time: {start_time}, Current time: {current_time}");
                 }
-                
+
                 let duration_from_start = if current_time >= start_time {
                     current_time - start_time
                 } else {
                     Duration::days(1) - (start_time - current_time)
                 };
-                
+
                 let tentative_end_time = if duration_from_start > Duration::hours(8) {
                     if self.debug_mode {
-                        eprintln!("DEBUG: Duration {duration_from_start:?} exceeds 8 hours, capping at 8 hours");
+                        eprintln!(
+                            "DEBUG: Duration {duration_from_start:?} exceeds 8 hours, capping at 8 hours"
+                        );
                     }
                     start_time + Duration::hours(8)
                 } else {
                     if self.debug_mode {
-                        eprintln!("DEBUG: Using current time as end time (duration: {duration_from_start:?})");
+                        eprintln!(
+                            "DEBUG: Using current time as end time (duration: {duration_from_start:?})"
+                        );
                     }
                     current_time
                 };
-                
+
                 last_entry.end_time = Some(tentative_end_time);
                 last_entry.tentative = true;
-                
+
                 if self.debug_mode {
                     let final_duration = last_entry.duration();
-                    eprintln!("DEBUG: Tentative end time: {tentative_end_time}, Final duration: {final_duration:?}");
+                    eprintln!(
+                        "DEBUG: Tentative end time: {tentative_end_time}, Final duration: {final_duration:?}"
+                    );
                 }
             }
         }
     }
 
-    fn calculate_flags(entries: &[TimeEntry], has_orphaned_stop: bool, date: NaiveDate) -> (bool, bool) {
+    fn calculate_flags(
+        entries: &[TimeEntry],
+        has_orphaned_stop: bool,
+        date: NaiveDate,
+    ) -> (bool, bool) {
         let today = Local::now().date_naive();
         let is_today = date == today;
-        
+
         let has_tentative = entries.iter().any(|entry| entry.tentative);
-        
+
         let has_incomplete = if is_today {
-            entries.iter().any(|entry| entry.start_time.is_some() && entry.end_time.is_none() && !entry.tentative) || has_orphaned_stop
+            entries.iter().any(|entry| {
+                entry.start_time.is_some() && entry.end_time.is_none() && !entry.tentative
+            }) || has_orphaned_stop
         } else {
-            entries.iter().any(|entry| entry.start_time.is_some() && entry.end_time.is_none()) || has_orphaned_stop
+            entries
+                .iter()
+                .any(|entry| entry.start_time.is_some() && entry.end_time.is_none())
+                || has_orphaned_stop
         };
 
         (has_tentative, has_incomplete)
     }
 
     #[allow(clippy::too_many_lines)]
-    fn parse_file(&self, content: &str, date: NaiveDate) -> Result<DaySummary, Box<dyn std::error::Error>> {
+    fn parse_file(
+        &self,
+        content: &str,
+        date: NaiveDate,
+    ) -> Result<DaySummary, Box<dyn std::error::Error>> {
         let mut entries = Vec::new();
         let mut current_entry = TimeEntry::new();
         let mut total_work_time_duration = Duration::zero();
@@ -157,7 +179,9 @@ impl TimesheetParser {
                 if current_entry.start_time.is_some() {
                     if self.debug_mode {
                         let start_time = current_entry.start_time;
-                        eprintln!("DEBUG: Line {line_num}: Found overlapping start work entry (previous incomplete entry at {start_time:?})");
+                        eprintln!(
+                            "DEBUG: Line {line_num}: Found overlapping start work entry (previous incomplete entry at {start_time:?})"
+                        );
                     }
                     entries.push(current_entry);
                     current_entry = TimeEntry::new();
@@ -165,20 +189,24 @@ impl TimesheetParser {
 
                 let hours: u32 = caps[1].parse()?;
                 let minutes: u32 = caps[2].parse()?;
-                
+
                 if let Some(time) = NaiveTime::from_hms_opt(hours, minutes, 0) {
                     current_entry.start_time = Some(time);
                     if self.debug_mode {
                         let trimmed_line = line.trim();
-                        eprintln!("DEBUG: Line {line_num}: Found start work at {time} (\"{trimmed_line}\")");
+                        eprintln!(
+                            "DEBUG: Line {line_num}: Found start work at {time} (\"{trimmed_line}\")"
+                        );
                     }
                 } else if self.debug_mode {
-                    eprintln!("DEBUG: Line {line_num}: Invalid time format {hours}:{minutes:02} in start work entry");
+                    eprintln!(
+                        "DEBUG: Line {line_num}: Invalid time format {hours}:{minutes:02} in start work entry"
+                    );
                 }
             } else if let Some(caps) = self.stop_regex.captures(line) {
                 let hours: u32 = caps[1].parse()?;
                 let minutes: u32 = caps[2].parse()?;
-                
+
                 if let Some(time) = NaiveTime::from_hms_opt(hours, minutes, 0) {
                     if current_entry.start_time.is_some() {
                         // Normal case: stop time for existing start time
@@ -186,7 +214,9 @@ impl TimesheetParser {
                         if self.debug_mode {
                             let duration = current_entry.duration().unwrap_or(Duration::zero());
                             let trimmed_line = line.trim();
-                            eprintln!("DEBUG: Line {line_num}: Found stop work at {time} (duration: {duration:?}) (\"{trimmed_line}\")");
+                            eprintln!(
+                                "DEBUG: Line {line_num}: Found stop work at {time} (duration: {duration:?}) (\"{trimmed_line}\")"
+                            );
                         }
                         entries.push(current_entry);
                         current_entry = TimeEntry::new();
@@ -195,16 +225,20 @@ impl TimesheetParser {
                         has_orphaned_stop = true;
                         if self.debug_mode {
                             let trimmed_line = line.trim();
-                            eprintln!("ERROR: Line {line_num}: Found stop work at {time} without corresponding start work (\"{trimmed_line}\")");
+                            eprintln!(
+                                "ERROR: Line {line_num}: Found stop work at {time} without corresponding start work (\"{trimmed_line}\")"
+                            );
                         }
                     }
                 } else if self.debug_mode {
-                    eprintln!("DEBUG: Line {line_num}: Invalid time format {hours}:{minutes:02} in stop work entry");
+                    eprintln!(
+                        "DEBUG: Line {line_num}: Invalid time format {hours}:{minutes:02} in stop work entry"
+                    );
                 }
             } else if let Some(caps) = self.work_time_regex.captures(line) {
                 let amount: u32 = caps[1].parse()?;
                 let unit = caps[2].to_lowercase();
-                
+
                 let duration = if unit.starts_with("hour") {
                     Duration::hours(i64::from(amount))
                 } else if unit.starts_with("minute") {
@@ -212,16 +246,20 @@ impl TimesheetParser {
                 } else {
                     Duration::zero()
                 };
-                
+
                 if self.debug_mode {
                     let trimmed_line = line.trim();
-                    eprintln!("DEBUG: Line {line_num}: Found work time {amount} {unit} (duration: {duration:?}) (\"{trimmed_line}\")");
+                    eprintln!(
+                        "DEBUG: Line {line_num}: Found work time {amount} {unit} (duration: {duration:?}) (\"{trimmed_line}\")"
+                    );
                 }
                 total_work_time_duration += duration;
             } else if self.holiday_regex.is_match(line) {
                 if self.debug_mode {
                     let trimmed_line = line.trim();
-                    eprintln!("DEBUG: Line {line_num}: Found holiday entry (8h 00m) (\"{trimmed_line}\")");
+                    eprintln!(
+                        "DEBUG: Line {line_num}: Found holiday entry (8h 00m) (\"{trimmed_line}\")"
+                    );
                 }
                 total_work_time_duration += Duration::hours(8);
             }
@@ -231,7 +269,9 @@ impl TimesheetParser {
         if current_entry.start_time.is_some() {
             if self.debug_mode {
                 let start_time = current_entry.start_time;
-                eprintln!("DEBUG: End of file: Found incomplete entry with start time {start_time:?}");
+                eprintln!(
+                    "DEBUG: End of file: Found incomplete entry with start time {start_time:?}"
+                );
             }
             entries.push(current_entry);
         }
@@ -239,13 +279,11 @@ impl TimesheetParser {
         // Apply tentative time only to the last incomplete entry if it's today
         self.apply_tentative_time(&mut entries, date);
 
-        let time_entries_duration: Duration = entries
-            .iter()
-            .filter_map(TimeEntry::duration)
-            .sum();
-        
+        let time_entries_duration: Duration = entries.iter().filter_map(TimeEntry::duration).sum();
+
         let total_duration = time_entries_duration + total_work_time_duration;
-        let (has_tentative, has_incomplete) = Self::calculate_flags(&entries, has_orphaned_stop, date);
+        let (has_tentative, has_incomplete) =
+            Self::calculate_flags(&entries, has_orphaned_stop, date);
 
         if self.debug_mode {
             eprintln!("DEBUG: Parsing complete for {date}");
@@ -257,9 +295,16 @@ impl TimesheetParser {
             eprintln!("DEBUG: Has tentative: {has_tentative}");
             eprintln!("DEBUG: Has incomplete/errors: {has_incomplete}");
             if has_incomplete {
-                let incomplete_entries = entries.iter().filter(|entry| entry.start_time.is_some() && entry.end_time.is_none() && !entry.tentative).count();
+                let incomplete_entries = entries
+                    .iter()
+                    .filter(|entry| {
+                        entry.start_time.is_some() && entry.end_time.is_none() && !entry.tentative
+                    })
+                    .count();
                 if incomplete_entries > 0 {
-                    eprintln!("ERROR: Found {incomplete_entries} incomplete time entries (start without stop)");
+                    eprintln!(
+                        "ERROR: Found {incomplete_entries} incomplete time entries (start without stop)"
+                    );
                 }
                 if has_orphaned_stop {
                     eprintln!("ERROR: Found orphaned stop entries (stop without start)");
@@ -276,7 +321,10 @@ impl TimesheetParser {
         })
     }
 
-    fn parse_directory(&self, dir_path: &Path) -> Result<Vec<DaySummary>, Box<dyn std::error::Error>> {
+    fn parse_directory(
+        &self,
+        dir_path: &Path,
+    ) -> Result<Vec<DaySummary>, Box<dyn std::error::Error>> {
         let mut summaries = Vec::new();
 
         for entry in fs::read_dir(dir_path)? {
@@ -302,7 +350,8 @@ impl TimesheetParser {
         let mut weeks: HashMap<NaiveDate, Vec<DaySummary>> = HashMap::new();
 
         for summary in summaries {
-            let week_start = summary.date - Duration::days(i64::from(summary.date.weekday().num_days_from_monday()));
+            let week_start = summary.date
+                - Duration::days(i64::from(summary.date.weekday().num_days_from_monday()));
             weeks.entry(week_start).or_default().push(summary.clone());
         }
 
@@ -310,10 +359,7 @@ impl TimesheetParser {
             .into_iter()
             .map(|(week_start, mut days)| {
                 days.sort_unstable_by_key(|day| day.date);
-                let total_duration = days
-                    .iter()
-                    .map(|day| day.total_duration)
-                    .sum();
+                let total_duration = days.iter().map(|day| day.total_duration).sum();
 
                 WeekSummary {
                     week_start,
@@ -356,11 +402,15 @@ fn format_duration(duration: Duration) -> String {
     format!("{hours}h {minutes:02}m")
 }
 
-fn format_duration_with_flags(duration: Duration, has_tentative: bool, has_incomplete: bool) -> String {
+fn format_duration_with_flags(
+    duration: Duration,
+    has_tentative: bool,
+    has_incomplete: bool,
+) -> String {
     let total_minutes = duration.num_minutes();
     let hours = total_minutes / 60;
     let minutes = total_minutes % 60;
-    
+
     let mut flags = String::new();
     if has_tentative {
         flags.push('*');
@@ -371,7 +421,7 @@ fn format_duration_with_flags(duration: Duration, has_tentative: bool, has_incom
         }
         flags.push_str("E!");
     }
-    
+
     if flags.is_empty() {
         format!("{hours}h {minutes:02}m")
     } else {
@@ -380,31 +430,47 @@ fn format_duration_with_flags(duration: Duration, has_tentative: bool, has_incom
 }
 
 const MONTH_NAMES: [&str; 12] = [
-    "January", "February", "March", "April", "May", "June",
-    "July", "August", "September", "October", "November", "December"
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
 ];
 
 fn get_month_name(month: u32) -> &'static str {
-    MONTH_NAMES.get(month.saturating_sub(1) as usize).map_or("Unknown", |&name| name)
+    MONTH_NAMES
+        .get(month.saturating_sub(1) as usize)
+        .map_or("Unknown", |&name| name)
 }
 
 fn print_status_bar_summary(summaries: &[DaySummary], weeks: &[WeekSummary], weekly_hours: f64) {
     let today = chrono::Local::now().date_naive();
-    
+
     // Find today's summary
     let today_summary = summaries.iter().find(|s| s.date == today);
-    
+
     // Find current week's summary
     let current_week = weeks.iter().find(|week| {
         let week_end = week.week_start + Duration::days(6);
         today >= week.week_start && today <= week_end
     });
-    
+
     match (today_summary, current_week) {
         (Some(day), Some(week)) => {
-            let day_str = format_duration_with_flags(day.total_duration, day.has_tentative, day.has_incomplete);
+            let day_str = format_duration_with_flags(
+                day.total_duration,
+                day.has_tentative,
+                day.has_incomplete,
+            );
             let week_str = format_duration(week.total_duration);
-            
+
             #[allow(clippy::cast_precision_loss)]
             let week_hours = week.total_duration.num_minutes() as f64 / 60.0;
             let week_status = if week_hours < weekly_hours {
@@ -413,11 +479,15 @@ fn print_status_bar_summary(summaries: &[DaySummary], weeks: &[WeekSummary], wee
             } else {
                 String::new()
             };
-            
+
             println!("Today: {day_str} | Week: {week_str}{week_status}");
         }
         (Some(day), None) => {
-            let day_str = format_duration_with_flags(day.total_duration, day.has_tentative, day.has_incomplete);
+            let day_str = format_duration_with_flags(
+                day.total_duration,
+                day.has_tentative,
+                day.has_incomplete,
+            );
             println!("Today: {day_str} | Week: No data");
         }
         (None, Some(week)) => {
@@ -438,14 +508,15 @@ fn print_status_bar_summary(summaries: &[DaySummary], weeks: &[WeekSummary], wee
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
-    
+
     let mut directory = ".";
     let mut weekly_hours = 40.0;
     let mut debug_mode = false;
     let mut summarize_mode = false;
-    
+
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -467,8 +538,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 i += 1;
             }
             "--help" | "-h" => {
-                println!("Usage: {} [directory] [--weekly-hours HOURS] [--debug] [--summarize]", args[0]);
-                println!("  directory: Directory containing markdown timesheet files (default: current directory)");
+                println!(
+                    "Usage: {} [directory] [--weekly-hours HOURS] [--debug] [--summarize]",
+                    args[0]
+                );
+                println!(
+                    "  directory: Directory containing markdown timesheet files (default: current directory)"
+                );
                 println!("  --weekly-hours: Expected weekly work hours (default: 40)");
                 println!("  --debug: Show detailed debug information and error locations");
                 println!("  --summarize: Show compact current day and week summary for status bar");
@@ -501,10 +577,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     weeks
         .iter()
         .flat_map(|week| &week.days)
-        .filter(|day| (day.total_duration > Duration::zero() || day.has_incomplete) && day.date >= two_weeks_ago)
+        .filter(|day| {
+            (day.total_duration > Duration::zero() || day.has_incomplete)
+                && day.date >= two_weeks_ago
+        })
         .for_each(|day| {
             let weekday = day.date.format("%a");
-            println!("{} {:3} - {}", day.date, weekday, format_duration_with_flags(day.total_duration, day.has_tentative, day.has_incomplete));
+            println!(
+                "{} {:3} - {}",
+                day.date,
+                weekday,
+                format_duration_with_flags(
+                    day.total_duration,
+                    day.has_tentative,
+                    day.has_incomplete
+                )
+            );
         });
 
     println!("\nMonthly Summary:");
@@ -513,7 +601,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .filter(|month| month.total_duration > Duration::zero())
         .for_each(|month| {
-            println!("{} {}: {}", get_month_name(month.month), month.year, format_duration(month.total_duration));
+            println!(
+                "{} {}: {}",
+                get_month_name(month.month),
+                month.year,
+                format_duration(month.total_duration)
+            );
         });
 
     println!("\nWeekly Summary:");
@@ -526,7 +619,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             #[allow(clippy::cast_precision_loss)]
             let actual_hours = week.total_duration.num_minutes() as f64 / 60.0;
             let formatted_duration = format_duration(week.total_duration);
-            
+
             if actual_hours < weekly_hours {
                 #[allow(clippy::cast_possible_truncation)]
                 let difference_minutes = ((weekly_hours - actual_hours) * 60.0).round() as i64;
@@ -542,9 +635,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 println!(
                     "Week of {} - {}: {}",
-                    week.week_start,
-                    week_end,
-                    formatted_duration
+                    week.week_start, week_end, formatted_duration
                 );
             }
         });
@@ -607,13 +698,13 @@ mod tests {
     #[test]
     fn test_parse_multiple_entries() {
         let parser = TimesheetParser::new(false).unwrap();
-        let content = r#"
+        let content = r"
 Start work 9:00
 Stop work 12:00
 Lunch break
 Start work 13:00
 Stop work 17:00
-"#;
+";
         let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap();
 
         let summary = parser.parse_file(content, date).unwrap();
@@ -688,10 +779,10 @@ Stop work 17:00
 
         let weeks = TimesheetParser::group_by_week(&summaries);
         assert_eq!(weeks.len(), 2);
-        
+
         assert_eq!(weeks[0].days.len(), 2);
         assert_eq!(weeks[0].total_duration.num_hours(), 15);
-        
+
         assert_eq!(weeks[1].days.len(), 1);
         assert_eq!(weeks[1].total_duration.num_hours(), 6);
     }
@@ -750,14 +841,14 @@ Stop work 17:00
     #[test]
     fn test_parse_different_formats() {
         let parser = TimesheetParser::new(false).unwrap();
-        let content = r#"
+        let content = r"
 Started working at 8:30
 Stopped working at 12:00
 Start work 13:00
 Stop work 17:30
 Started work at 19:00
 Stopped working 21:00
-"#;
+";
         let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap();
 
         let summary = parser.parse_file(content, date).unwrap();
@@ -801,12 +892,12 @@ Stopped working 21:00
     #[test]
     fn test_work_time_mixed_with_start_stop() {
         let parser = TimesheetParser::new(false).unwrap();
-        let content = r#"
+        let content = r"
 Start work 9:00
 Stop work 12:00
 Work time 90 minutes read textbook
 Work time 1 hour did other work
-"#;
+";
         let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap();
 
         let summary = parser.parse_file(content, date).unwrap();
@@ -867,12 +958,12 @@ Work time 1 hour did other work
     #[test]
     fn test_holiday_mixed_with_other_entries() {
         let parser = TimesheetParser::new(false).unwrap();
-        let content = r#"
+        let content = r"
 Start work 9:00
 Stop work 12:00
 Stat holiday
 Work time 1 hour extra project
-"#;
+";
         let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap();
 
         let summary = parser.parse_file(content, date).unwrap();
@@ -882,10 +973,10 @@ Work time 1 hour extra project
     #[test]
     fn test_multiple_holidays_same_day() {
         let parser = TimesheetParser::new(false).unwrap();
-        let content = r#"
+        let content = r"
 Stat holiday
 Statutory holiday mentioned again
-"#;
+";
         let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap();
 
         let summary = parser.parse_file(content, date).unwrap();
@@ -955,13 +1046,13 @@ Statutory holiday mentioned again
     #[test]
     fn test_mixed_holiday_types() {
         let parser = TimesheetParser::new(false).unwrap();
-        let content = r#"
+        let content = r"
 Start work 9:00
 Stop work 12:00
 PTO
 Holiday day
 Stat holiday
-"#;
+";
         let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap();
 
         let summary = parser.parse_file(content, date).unwrap();
@@ -979,24 +1070,27 @@ Stat holiday
         assert!(!summary.has_tentative);
     }
 
-    #[test] 
+    #[test]
     fn test_format_duration_with_tentative() {
         let duration = Duration::hours(5) + Duration::minutes(30);
         assert_eq!(format_duration_with_flags(duration, false, false), "5h 30m");
-        assert_eq!(format_duration_with_flags(duration, true, false), "5h 30m *");
+        assert_eq!(
+            format_duration_with_flags(duration, true, false),
+            "5h 30m *"
+        );
     }
 
     #[test]
     fn test_multiple_incomplete_entries_only_last_gets_tentative() {
         let parser = TimesheetParser::new(false).unwrap();
-        let content = r#"
+        let content = r"
 Start work 8:00
 Stop work 12:00
 Start work 13:00
 Start work 14:00
-"#;
+";
         let today = Local::now().date_naive();
-        
+
         let summary = parser.parse_file(content, today).unwrap();
         // Should be: 4 hours (8-12) + tentative time from 14:00 to now (capped at 8 hours)
         // The 13:00 start should be ignored since it was overridden by 14:00 start
@@ -1008,7 +1102,7 @@ Start work 14:00
     #[test]
     fn test_current_time_used_as_stop_time_for_last_entry() {
         use chrono::Timelike;
-        
+
         let parser = TimesheetParser::new(false).unwrap();
         // Use a start time very close to current time to avoid 8-hour cap issues
         let current_time = Local::now().time();
@@ -1017,13 +1111,17 @@ Start work 14:00
         } else {
             NaiveTime::from_hms_opt(23, current_time.minute(), 0).unwrap()
         };
-        
-        let content = format!("Start work {}:{:02}", start_time.hour(), start_time.minute());
+
+        let content = format!(
+            "Start work {}:{:02}",
+            start_time.hour(),
+            start_time.minute()
+        );
         let today = Local::now().date_naive();
-        
+
         let summary = parser.parse_file(&content, today).unwrap();
         assert!(summary.has_tentative);
-        
+
         // Should have some duration (at least a few minutes, at most 8 hours)
         assert!(summary.total_duration > Duration::minutes(0));
         assert!(summary.total_duration <= Duration::hours(8));
@@ -1032,21 +1130,21 @@ Start work 14:00
     #[test]
     fn test_incomplete_entry_flags() {
         let parser = TimesheetParser::new(false).unwrap();
-        
+
         // Test incomplete entry on a non-today date
         let content = "Start work 9:00\nSome work done but forgot to stop";
         let past_date = NaiveDate::from_ymd_opt(2025, 8, 20).unwrap();
-        
+
         let summary = parser.parse_file(content, past_date).unwrap();
         assert!(summary.has_incomplete);
         assert!(!summary.has_tentative);
-        
+
         // Test complete entries
         let content = "Start work 9:00\nStop work 17:00";
         let summary = parser.parse_file(content, past_date).unwrap();
         assert!(!summary.has_incomplete);
         assert!(!summary.has_tentative);
-        
+
         // Test today with incomplete entry (should get tentative, not incomplete)
         let content = "Start work 16:00";
         let today = Local::now().date_naive();
@@ -1058,30 +1156,30 @@ Start work 14:00
     #[test]
     fn test_orphaned_stop_entry_flags() {
         let parser = TimesheetParser::new(false).unwrap();
-        
+
         // Test orphaned stop entry on a non-today date
         let content = "Some work done\nStop work 17:00";
         let past_date = NaiveDate::from_ymd_opt(2025, 8, 20).unwrap();
-        
+
         let summary = parser.parse_file(content, past_date).unwrap();
         assert!(summary.has_incomplete); // Orphaned stop should flag as incomplete
         assert!(!summary.has_tentative);
         assert_eq!(summary.total_duration, Duration::zero()); // No duration from orphaned stop
-        
+
         // Test orphaned stop on today's date
         let content = "Some work done\nStop work 17:00";
         let today = Local::now().date_naive();
         let summary = parser.parse_file(content, today).unwrap();
         assert!(summary.has_incomplete); // Orphaned stop should still flag as incomplete even for today
         assert!(!summary.has_tentative);
-        
+
         // Test mixed: valid entry + orphaned stop
-        let content = r#"
+        let content = r"
 Start work 9:00
 Stop work 12:00
 Some notes
 Stop work 17:00
-"#;
+";
         let summary = parser.parse_file(content, past_date).unwrap();
         assert!(summary.has_incomplete); // Should flag due to orphaned stop
         assert!(!summary.has_tentative);
@@ -1091,17 +1189,26 @@ Stop work 17:00
     #[test]
     fn test_format_duration_with_flags() {
         let duration = Duration::hours(5) + Duration::minutes(30);
-        
+
         // No flags
         assert_eq!(format_duration_with_flags(duration, false, false), "5h 30m");
-        
+
         // Tentative only
-        assert_eq!(format_duration_with_flags(duration, true, false), "5h 30m *");
-        
+        assert_eq!(
+            format_duration_with_flags(duration, true, false),
+            "5h 30m *"
+        );
+
         // Incomplete only
-        assert_eq!(format_duration_with_flags(duration, false, true), "5h 30m E!");
-        
+        assert_eq!(
+            format_duration_with_flags(duration, false, true),
+            "5h 30m E!"
+        );
+
         // Both flags
-        assert_eq!(format_duration_with_flags(duration, true, true), "5h 30m * E!");
+        assert_eq!(
+            format_duration_with_flags(duration, true, true),
+            "5h 30m * E!"
+        );
     }
 }
