@@ -1,7 +1,7 @@
 use chrono::{Datelike, Duration, Local, NaiveDate, NaiveTime};
+use clap::Parser;
 use regex::Regex;
 use std::collections::HashMap;
-use std::env;
 use std::fs;
 use std::path::Path;
 
@@ -508,57 +508,38 @@ fn print_status_bar_summary(summaries: &[DaySummary], weeks: &[WeekSummary], wee
     }
 }
 
+#[derive(Parser)]
+#[command(version)]
+#[command(about = "A tool for processing markdown files to extract and format timesheet data")]
+struct Args {
+    /// Directory containing markdown timesheet files
+    #[arg(default_value = ".")]
+    directory: String,
+
+    /// Expected weekly work hours
+    #[arg(long, default_value_t = 40.0)]
+    weekly_hours: f64,
+
+    /// Show detailed debug information and error locations
+    #[arg(long)]
+    debug: bool,
+
+    /// Show compact current day and week summary for status bar
+    #[arg(long)]
+    summarize: bool,
+}
+
 #[allow(clippy::too_many_lines)]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<String> = env::args().collect();
-
-    let mut directory = ".";
-    let mut weekly_hours = 40.0;
-    let mut debug_mode = false;
-    let mut summarize_mode = false;
-
-    let mut i = 1;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--weekly-hours" => {
-                if let Some(value) = args.get(i + 1) {
-                    weekly_hours = value.parse().unwrap_or(40.0);
-                    i += 2;
-                } else {
-                    eprintln!("Error: --weekly-hours requires a value");
-                    return Ok(());
-                }
-            }
-            "--debug" => {
-                debug_mode = true;
-                i += 1;
-            }
-            "--summarize" => {
-                summarize_mode = true;
-                i += 1;
-            }
-            "--help" | "-h" => {
-                println!(
-                    "Usage: {} [directory] [--weekly-hours HOURS] [--debug] [--summarize]",
-                    args[0]
-                );
-                println!(
-                    "  directory: Directory containing markdown timesheet files (default: current directory)"
-                );
-                println!("  --weekly-hours: Expected weekly work hours (default: 40)");
-                println!("  --debug: Show detailed debug information and error locations");
-                println!("  --summarize: Show compact current day and week summary for status bar");
-                return Ok(());
-            }
-            _ => {
-                directory = &args[i];
-                i += 1;
-            }
-        }
-    }
+    let Args {
+        directory,
+        weekly_hours,
+        debug: debug_mode,
+        summarize: summarize_mode,
+    } = Args::parse();
 
     let parser = TimesheetParser::new(debug_mode)?;
-    let summaries = parser.parse_directory(Path::new(directory))?;
+    let summaries = parser.parse_directory(Path::new(&directory))?;
     let weeks = TimesheetParser::group_by_week(&summaries);
 
     if summarize_mode {

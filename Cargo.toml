@@ -1,6 +1,6 @@
 [package]
 name = "markdown_timesheet"
-version = "0.9.0"
+version = "0.9.1"
 edition = "2024"
 rust-version = "1.85"
 description = "A tool for processing markdown files to extract and format timesheet data"
@@ -11,4 +11,5 @@ repository = "https://github.com/rickprice/MarkdownTimeSheets"
 
 [dependencies]
 chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
 regex = "1.0"
