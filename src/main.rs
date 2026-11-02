@@ -74,7 +74,7 @@ impl TimesheetParser {
             stop_regex: Regex::new(
                 r"(?i)stop(?:ped)?\s+work(?:ing)?(?:\s+at)?:?\s+(\d{1,2}):(\d{2})",
             )?,
-            work_time_regex: Regex::new(r"(?i)work\s+time\s+(\d+)\s+(minutes?|hours?)")?,
+            work_time_regex: Regex::new(r"(?i)work\s+time:?\s+(\d+)\s+(minutes?|hours?)")?,
             holiday_regex: Regex::new(r"(?i)(stat(?:utory)?\s+holiday|pto|holiday\s+day)")?,
             debug_mode,
         })
@@ -527,7 +527,36 @@ struct Args {
     /// Show compact current day and week summary for status bar
     #[arg(long)]
     summarize: bool,
+
+    /// Show supported time entry formats and exit
+    #[arg(long)]
+    formats: bool,
 }
+
+const SUPPORTED_FORMATS: &str = r"Supported Time Entry Formats:
+
+Start/Stop Time Entries:
+  Start work 9:00
+  Start work: 9:00
+  Started working at 8:30
+  Stop work 17:30
+  Stop work: 17:30
+  Stopped working at 16:45
+
+Direct Time Entries:
+  Work time 2 hours project work
+  Work time: 2 hours project work
+  Work time 30 minutes meeting
+  Work time 1 hour documentation
+  Work time 90 minutes code review
+
+Holiday/PTO Entries (automatically adds 8 hours):
+  Stat holiday
+  Statutory holiday
+  PTO
+  Holiday day
+
+All formats are case insensitive.";
 
 #[allow(clippy::too_many_lines)]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -536,7 +565,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         weekly_hours,
         debug: debug_mode,
         summarize: summarize_mode,
+        formats: formats_mode,
     } = Args::parse();
+
+    if formats_mode {
+        println!("{SUPPORTED_FORMATS}");
+        return Ok(());
+    }
 
     let parser = TimesheetParser::new(debug_mode)?;
     let summaries = parser.parse_directory(Path::new(&directory))?;
@@ -894,6 +929,17 @@ Work time 1 hour did other work
         let summary = parser.parse_file(content, date).unwrap();
         assert_eq!(summary.total_duration.num_hours(), 5);
         assert_eq!(summary.total_duration.num_minutes() % 60, 30);
+    }
+
+    #[test]
+    fn test_work_time_colon_format() {
+        let parser = TimesheetParser::new(false).unwrap();
+        let content = "Work time: 2 hours testing";
+        let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap();
+
+        let summary = parser.parse_file(content, date).unwrap();
+        assert_eq!(summary.total_duration.num_hours(), 2);
+        assert_eq!(summary.total_duration.num_minutes() % 60, 0);
     }
 
     #[test]

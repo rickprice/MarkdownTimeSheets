@@ -12,7 +12,7 @@ This tool parses markdown files containing time entries in natural language form
 - **Case Insensitive**: Works with different capitalizations
 - **Multiple Entries**: Supports multiple work sessions per day (e.g., breaks for lunch)
 - **Overnight Support**: Handles work sessions that cross midnight
-- **Direct Time Entries**: Supports "Work time X hours/minutes" for flexible logging
+- **Direct Time Entries**: Supports "Work time X hours/minutes" (with or without a colon after "time") for flexible logging
 - **Holiday Support**: Automatically adds 8 hours for holidays, PTO, and statutory holidays
 - **Configurable Weekly Hours**: Set custom weekly hour targets (default: 40 hours)
 - **Hour Shortage Tracking**: Shows how many hours short when weekly target isn't met
@@ -45,6 +45,9 @@ cargo run -- --summarize
 # Status bar with custom weekly hours
 cargo run -- --summarize --weekly-hours 35
 
+# Show supported time entry formats
+cargo run -- --formats
+
 # Show help
 cargo run -- --help
 ```
@@ -54,6 +57,7 @@ cargo run -- --help
 - `directory`: Directory containing markdown timesheet files (default: current directory)
 - `--weekly-hours HOURS`: Expected weekly work hours for shortage calculation (default: 40)
 - `--summarize`: Show compact current day and week summary for status bar
+- `--formats`: Show supported time entry formats and exit
 - `--debug`: Show detailed debug information and error locations
 - `--help`, `-h`: Show usage information
 
@@ -78,6 +82,7 @@ Stop work 17:30
 
 # Alternative: Direct time logging
 Work time 2 hours code review
+Work time: 2 hours testing
 Work time 30 minutes documentation
 
 # Holiday/PTO examples
@@ -98,9 +103,12 @@ The parser recognizes these patterns (case insensitive):
 
 ### Direct Time Entries
 - `Work time 2 hours project work`
+- `Work time: 2 hours testing` (colon after "time" is optional)
 - `Work time 30 minutes meeting`
 - `Work time 1 hour documentation`
 - `Work time 90 minutes code review`
+
+You can list these formats from the tool itself with `cargo run -- --formats`.
 
 ### Holiday/PTO Entries (automatically adds 8 hours)
 - `Stat holiday` or `Statutory holiday`
@@ -191,7 +199,7 @@ The codebase follows Rust best practices and passes all quality checks with zero
 # Run clippy for linting (strict mode with pedantic checks)
 cargo clippy -- -D warnings -D clippy::all -D clippy::pedantic
 
-# Run tests (42 tests, all passing)
+# Run tests (44 tests, all passing)
 cargo test
 
 # Build optimized release
@@ -215,5 +223,5 @@ The code is optimized for performance and follows canonical Rust patterns:
 - Employs `sort_unstable_by_key()` for better performance than stable sorting
 - Avoids unnecessary allocations and uses slices where possible
 - Passes clippy with zero warnings on pedantic mode
-- All 42 tests pass with no regressions
+- All 44 tests pass with no regressions
 - Modern inline format syntax for optimal string handling
