@@ -69,10 +69,10 @@ impl TimesheetParser {
     fn new(debug_mode: bool) -> Result<Self, regex::Error> {
         Ok(Self {
             start_regex: Regex::new(
-                r"(?i)start(?:ed)?\s+work(?:ing)?(?:\s+at)?\s+(\d{1,2}):(\d{2})",
+                r"(?i)start(?:ed)?\s+work(?:ing)?(?:\s+at)?:?\s+(\d{1,2}):(\d{2})",
             )?,
             stop_regex: Regex::new(
-                r"(?i)stop(?:ped)?\s+work(?:ing)?(?:\s+at)?\s+(\d{1,2}):(\d{2})",
+                r"(?i)stop(?:ped)?\s+work(?:ing)?(?:\s+at)?:?\s+(\d{1,2}):(\d{2})",
             )?,
             work_time_regex: Regex::new(r"(?i)work\s+time\s+(\d+)\s+(minutes?|hours?)")?,
             holiday_regex: Regex::new(r"(?i)(stat(?:utory)?\s+holiday|pto|holiday\s+day)")?,
@@ -835,6 +835,16 @@ Stopped working 21:00
         let summary = parser.parse_file(content, date).unwrap();
         assert_eq!(summary.total_duration.num_hours(), 10);
         assert_eq!(summary.total_duration.num_minutes() % 60, 0);
+    }
+
+    #[test]
+    fn test_parse_colon_format() {
+        let parser = TimesheetParser::new(false).unwrap();
+        let content = "Start work: 9:00\nStop work: 17:00";
+        let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap();
+
+        let summary = parser.parse_file(content, date).unwrap();
+        assert_eq!(summary.total_duration.num_hours(), 8);
     }
 
     #[test]
