@@ -1,6 +1,6 @@
 [package]
 name = "markdown_timesheet"
-version = "0.9.3"
+version = "0.9.4"
 edition = "2024"
 rust-version = "1.85"
 description = "A tool for processing markdown files to extract and format timesheet data"

@@ -75,7 +75,7 @@ impl TimesheetParser {
                 r"(?i)stop(?:ped)?\s+work(?:ing)?(?:\s+at)?:?\s+(\d{1,2}):(\d{2})",
             )?,
             work_time_regex: Regex::new(r"(?i)work\s+time:?\s+(\d+)\s+(minutes?|hours?)")?,
-            holiday_regex: Regex::new(r"(?i)(stat(?:utory)?\s+holiday|pto|holiday\s+day)")?,
+            holiday_regex: Regex::new(r"(?i)(stat(?:utory)?\s+holiday|\bpto\b|holiday\s+day)")?,
             debug_mode,
         })
     }
@@ -1044,6 +1044,16 @@ Statutory holiday mentioned again
     fn test_pto_with_context() {
         let parser = TimesheetParser::new(false).unwrap();
         let content = "Taking PTO today for vacation";
+        let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap();
+
+        let summary = parser.parse_file(content, date).unwrap();
+        assert_eq!(summary.total_duration.num_hours(), 8);
+    }
+
+    #[test]
+    fn test_pto_does_not_match_substring_in_word() {
+        let parser = TimesheetParser::new(false).unwrap();
+        let content = "Start work: 9:00\n- Need to ask about getting a laptop\nStop work: 17:00";
         let date = NaiveDate::from_ymd_opt(2025, 8, 25).unwrap();
 
         let summary = parser.parse_file(content, date).unwrap();
